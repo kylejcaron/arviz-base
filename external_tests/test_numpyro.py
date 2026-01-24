@@ -4,7 +4,7 @@ from collections import namedtuple
 import numpy as np
 import pytest
 
-from arviz_base.io_numpyro import from_numpyro, from_numpyro_svi
+from arviz_base.io_numpyro import from_numpyro, from_numpyro_nested_mcmc, from_numpyro_svi
 from arviz_base.testing import check_multiple_attrs
 
 from .helpers import importorskip, load_cached_models
@@ -20,20 +20,27 @@ numpyro.set_host_device_count(2)
 
 def _is_svi_data(data_obj):
     """Check if data object is SVI (dict format) or MCMC."""
-    return isinstance(data_obj, dict)
+    return isinstance(data_obj, dict) and "svi" in data_obj
+
+
+def _is_nested_data(data_obj):
+    """Check if data object is NestedSampler (dict format with nested_sampler key)."""
+    return isinstance(data_obj, dict) and "nested_sampler" in data_obj
 
 
 def _get_model_from_data(data_obj):
-    """Extract model from either MCMC or SVI data."""
+    """Extract model from either MCMC, SVI, or NestedSampler data."""
     if _is_svi_data(data_obj):
         svi = data_obj["svi"]
         return getattr(svi.guide, "model", svi.model)
+    elif _is_nested_data(data_obj):
+        return data_obj["nested_sampler"].model
     else:
         return data_obj.sampler.model
 
 
 def _get_samples_from_data(data_obj):
-    """Extract samples from either MCMC or SVI data."""
+    """Extract samples from either MCMC, SVI, or NestedSampler data."""
     if _is_svi_data(data_obj):
         import jax
 
@@ -49,6 +56,12 @@ def _get_samples_from_data(data_obj):
             )
         predictive = Predictive(svi.guide, params=svi_result.params, num_samples=1000)
         return predictive(key, *model_args, **model_kwargs)
+    elif _is_nested_data(data_obj):
+        import jax
+
+        nested_sampler = data_obj["nested_sampler"]
+        key = jax.random.PRNGKey(0)
+        return nested_sampler.get_samples(key, num_samples=1000)
     else:
         return data_obj.get_samples()
 
@@ -57,6 +70,8 @@ def _from_numpyro_auto(data_obj, **kwargs):
     """Test helper to auto-route to correct converter based on data type."""
     if _is_svi_data(data_obj):
         return from_numpyro_svi(**data_obj, **kwargs)
+    elif _is_nested_data(data_obj):
+        return from_numpyro_nested_mcmc(**data_obj, **kwargs)
     else:
         return from_numpyro(posterior=data_obj, **kwargs)
 
@@ -66,16 +81,22 @@ def _from_numpyro_inference_result(result_dict, **kwargs):
 
     Handles dicts from _run_inference which are either:
     - {"svi": svi, "svi_result": result} for SVI
+    - {"nested_sampler": ns, "model_kwargs": kwargs} for NestedSampler
     - {"posterior": mcmc} for MCMC
     """
     if "svi" in result_dict:
         return from_numpyro_svi(**result_dict, **kwargs)
+    elif "nested_sampler" in result_dict:
+        return from_numpyro_nested_mcmc(**result_dict, **kwargs)
     else:
         return from_numpyro(**result_dict, **kwargs)
 
 
 class TestDataNumPyro:
-    @pytest.fixture(scope="class", params=["numpyro", "numpyro_svi", "numpyro_svi_custom_guide"])
+    @pytest.fixture(
+        scope="class",
+        params=["numpyro", "numpyro_svi", "numpyro_svi_custom_guide", "numpyro_nested"],
+    )
     def data(self, request, eight_schools_params, draws, chains):
         class Data:
             obj = load_cached_models(eight_schools_params, draws, chains, "numpyro")[request.param]
@@ -132,7 +153,7 @@ class TestDataNumPyro:
         )
 
     def test_inference_data_namedtuple(self, data):
-        if _is_svi_data(data.obj):
+        if _is_svi_data(data.obj) or _is_nested_data(data.obj):
             pytest.skip("Namedtuple test only applies to MCMC")
 
         posterior = data.obj
@@ -163,7 +184,8 @@ class TestDataNumPyro:
             "prior_predictive": ["obs"],
             "observed_data": ["obs"],
         }
-        if isinstance(data.obj, dict):  # if its SVI, drop sample_stats check
+        # SVI and NestedSampler don't have sample_stats
+        if _is_svi_data(data.obj) or _is_nested_data(data.obj):
             test_dict.pop("sample_stats")
         fails = check_multiple_attrs(test_dict, inference_data)
         assert not fails
@@ -177,7 +199,7 @@ class TestDataNumPyro:
     def test_inference_data_no_posterior(
         self, data, eight_schools_params, predictions_data, predictions_params
     ):
-        if _is_svi_data(data.obj):
+        if _is_svi_data(data.obj) or _is_nested_data(data.obj):
             pytest.skip("This test only runs with MCMC (numpyro)")
 
         posterior_samples = _get_samples_from_data(data.obj)
@@ -233,7 +255,8 @@ class TestDataNumPyro:
             "posterior": ["mu", "tau", "eta"],
             "sample_stats": ["diverging"],
         }
-        if _is_svi_data(data.obj):
+        # SVI and NestedSampler don't have sample_stats
+        if _is_svi_data(data.obj) or _is_nested_data(data.obj):
             test_dict.pop("sample_stats")
         fails = check_multiple_attrs(test_dict, idata)
         assert not fails
@@ -305,7 +328,7 @@ class TestDataNumPyro:
         assert not fails
 
     def test_inference_data_num_chains(self, data, predictions_data, chains):
-        if _is_svi_data(data.obj):
+        if _is_svi_data(data.obj) or _is_nested_data(data.obj):
             pytest.skip("This test only runs with MCMC (numpyro)")
         predictions = predictions_data
         inference_data = from_numpyro(predictions=predictions, num_chains=chains)
@@ -593,9 +616,52 @@ class TestDataNumPyro:
         inference_data = self.get_inference_data(
             data, eight_schools_params, predictions_data, predictions_params, infer_dims=True
         )
-        sample_dims = ("sample",) if _is_svi_data(data.obj) else ("chain", "draw")
+        sample_dims = (
+            ("sample",)
+            if (_is_svi_data(data.obj) or _is_nested_data(data.obj))
+            else ("chain", "draw")
+        )
         assert inference_data.predictions.obs.dims == (sample_dims + ("J",))
         assert "J" in inference_data.predictions.obs.coords
+
+    def test_nested_sampler_basic(self):
+        """Test basic NestedSampler conversion."""
+        import warnings
+
+        import numpyro
+        import numpyro.distributions as dist
+
+        # Suppress warnings from jaxns
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            warnings.simplefilter("ignore", DeprecationWarning)
+            from numpyro.contrib.nested_sampling import NestedSampler
+
+        rng = np.random.default_rng()
+        y = rng.normal(size=10)
+
+        def model(y=None):
+            mu = numpyro.sample("mu", dist.Normal(0, 5))
+            sigma = numpyro.sample("sigma", dist.HalfNormal(1))
+            numpyro.sample("obs", dist.Normal(mu, sigma), obs=y)
+
+        nested_sampler = NestedSampler(model, constructor_kwargs={"num_live_points": 50})
+        nested_sampler.run(PRNGKey(0), y=y)
+
+        inference_data = from_numpyro_nested_mcmc(
+            nested_sampler, model_kwargs={"y": y}, num_samples=100
+        )
+
+        test_dict = {
+            "posterior": ["mu", "sigma"],
+            "observed_data": ["obs"],
+        }
+        fails = check_multiple_attrs(test_dict, inference_data)
+        assert not fails
+
+        # Check sample dimension
+        assert inference_data.posterior.mu.dims == ("sample",)
+        assert len(inference_data.posterior.mu) == 100
 
     def _run_inference(self, model, svi, guide_fn):
         from numpyro.infer import MCMC, NUTS, SVI, Trace_ELBO

@@ -743,6 +743,100 @@ class SVIConverter(BaseNumPyroConverter):
         return predictive(key, *self._args, **self._kwargs)
 
 
+class NestedMCMCConverter(BaseNumPyroConverter):
+    """Converter for numpyro NestedSampler inference results."""
+
+    def __init__(
+        self,
+        nested_sampler,
+        *,
+        model_args=None,
+        model_kwargs=None,
+        prior=None,
+        posterior_predictive=None,
+        predictions=None,
+        constant_data=None,
+        predictions_constant_data=None,
+        log_likelihood=False,
+        index_origin=None,
+        coords=None,
+        dims=None,
+        pred_dims=None,
+        extra_event_dims=None,
+        num_samples=1000,
+    ):
+        """Convert NumPyro NestedSampler results into an InferenceData object.
+
+        Parameters
+        ----------
+        nested_sampler : numpyro.infer.NestedSampler
+            Fitted NestedSampler object from NumPyro
+        prior : dict, optional
+            Prior samples from a NumPyro model
+        posterior_predictive : dict, optional
+            Posterior predictive samples for the posterior
+        predictions : dict, optional
+            Out of sample predictions
+        constant_data : dict, optional
+            Dictionary containing constant data variables mapped to their values.
+        predictions_constant_data : dict, optional
+            Constant data used for out-of-sample predictions.
+        log_likelihood : bool, default False
+            Whether to compute log likelihood
+        index_origin : int, optional
+        coords : dict, optional
+            Map of dimensions to coordinates
+        dims : dict of {str : list of str}, optional
+            Map variable names to their coordinates. Will be inferred if they are not provided.
+        pred_dims : dict, optional
+            Dims for predictions data. Map variable names to their coordinates.
+        extra_event_dims : dict, optional
+            Maps event dims that couldnt be inferred (ie deterministic sites) to their coordinates.
+        num_samples : int, optional
+            The number of posterior samples to use. Default is 1000.
+        """
+        self.nested_sampler = nested_sampler
+        self.num_samples = num_samples
+        self._args = model_args or tuple()
+        self._kwargs = model_kwargs or dict()
+
+        super().__init__(
+            posterior=nested_sampler,
+            prior=prior,
+            posterior_predictive=posterior_predictive,
+            predictions=predictions,
+            constant_data=constant_data,
+            predictions_constant_data=predictions_constant_data,
+            log_likelihood=log_likelihood,
+            index_origin=index_origin,
+            coords=coords,
+            dims=dims,
+            pred_dims=pred_dims,
+            extra_event_dims=extra_event_dims,
+        )
+
+    @property
+    def model(self):
+        """Return the internal model."""
+        if self.nested_sampler is not None:
+            return self.nested_sampler.model
+        return None
+
+    def _infer_sample_shape(self):
+        """Return the expected sample shape."""
+        return (self.num_samples,)
+
+    def _get_train_args_kwargs(self):
+        return (self._args, self._kwargs) if self.nested_sampler is not None else (tuple(), dict())
+
+    def _get_samples(self):
+        """Extract samples from NestedSampler."""
+        import jax
+
+        key = jax.random.PRNGKey(0)
+        return self.nested_sampler.get_samples(key, num_samples=self.num_samples)
+
+
 def from_numpyro(
     posterior=None,
     *,
@@ -918,4 +1012,94 @@ def from_numpyro_svi(
             dims=dims,
             pred_dims=pred_dims,
             extra_event_dims=extra_event_dims,
+        ).to_datatree()
+
+
+def from_numpyro_nested_mcmc(
+    nested_sampler,
+    *,
+    model_args=None,
+    model_kwargs=None,
+    prior=None,
+    posterior_predictive=None,
+    predictions=None,
+    constant_data=None,
+    predictions_constant_data=None,
+    log_likelihood=None,
+    index_origin=None,
+    coords=None,
+    dims=None,
+    pred_dims=None,
+    extra_event_dims=None,
+    num_samples: int = 1000,
+):
+    """Convert NumPyro NestedSampler results into a DataTree object.
+
+    For a usage example read :ref:`numpyro_conversion`
+
+    If no dims are provided, this will infer batch dim names from NumPyro model plates.
+    For event dim names, such as with the ZeroSumNormal, `infer={"event_dims":dim_names}`
+    can be provided in numpyro.sample, i.e.::
+
+        # equivalent to dims entry, {"gamma": ["groups"]}
+        gamma = numpyro.sample(
+            "gamma",
+            dist.ZeroSumNormal(1, event_shape=(n_groups,)),
+            infer={"event_dims":["groups"]}
+        )
+
+    There is also an additional `extra_event_dims` input to cover any edge cases, for instance
+    deterministic sites with event dims (which dont have an `infer` argument to provide metadata).
+
+    Parameters
+    ----------
+    nested_sampler : numpyro.infer.NestedSampler
+        Fitted NestedSampler object from NumPyro
+    prior : dict, optional
+        Prior samples from a NumPyro model
+    posterior_predictive : dict, optional
+        Posterior predictive samples for the posterior
+    predictions : dict, optional
+        Out of sample predictions
+    constant_data : dict, optional
+        Dictionary containing constant data variables mapped to their values.
+    predictions_constant_data : dict, optional
+        Constant data used for out-of-sample predictions.
+    log_likelihood : bool, optional
+        Whether to compute log likelihood
+    index_origin : int, optional
+    coords : dict, optional
+        Map of dimensions to coordinates
+    dims : dict of {str : list of str}, optional
+        Map variable names to their coordinates. Will be inferred if they are not provided.
+    pred_dims : dict, optional
+        Dims for predictions data. Map variable names to their coordinates. Default behavior is to
+        infer dims if this is not provided
+    extra_event_dims : dict, optional
+        Extra event dims for deterministic sites. Maps event dims that couldnt be inferred to
+        their coordinates.
+    num_samples : int, default 1000
+        The number of posterior samples to draw from the nested sampler results.
+
+    Returns
+    -------
+    DataTree
+    """
+    with rc_context(rc={"data.sample_dims": ["sample"]}):
+        return NestedMCMCConverter(
+            nested_sampler,
+            model_args=model_args,
+            model_kwargs=model_kwargs,
+            prior=prior,
+            posterior_predictive=posterior_predictive,
+            predictions=predictions,
+            constant_data=constant_data,
+            predictions_constant_data=predictions_constant_data,
+            log_likelihood=log_likelihood,
+            index_origin=index_origin,
+            coords=coords,
+            dims=dims,
+            pred_dims=pred_dims,
+            extra_event_dims=extra_event_dims,
+            num_samples=num_samples,
         ).to_datatree()

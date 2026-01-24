@@ -184,6 +184,35 @@ def numpyro_schools_model_svi_custom_guide(data, draws, chains):
     }
 
 
+def numpyro_schools_model_nested(data, draws, chains):
+    """Non-centered eight schools implementation with NumPyro NestedSampler."""
+    import warnings
+
+    from jax.random import PRNGKey
+
+    # Suppress warnings from jaxns
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        warnings.simplefilter("ignore", DeprecationWarning)
+        from numpyro.contrib.nested_sampling import NestedSampler
+
+    nested_sampler = NestedSampler(
+        _numpyro_noncentered_model,
+        constructor_kwargs={"num_live_points": 100},
+    )
+    nested_sampler.run(PRNGKey(0), **data)
+
+    # Clean up non-picklable attributes: constructor_kwargs contains device objects
+    if "devices" in nested_sampler.constructor_kwargs:
+        nested_sampler.constructor_kwargs.pop("devices")
+
+    # Store model args/kwargs for converter
+    return {
+        "nested_sampler": nested_sampler,
+        "model_kwargs": data,
+    }
+
+
 def pystan_noncentered_schools(data, draws, chains):
     """Non-centered eight schools implementation for pystan."""
     schools_code = """
@@ -245,6 +274,7 @@ def load_cached_models(eight_schools_data, draws, chains, libs=None):
         ("numpyro", numpyro_schools_model, None),
         ("numpyro", numpyro_schools_model_svi, "numpyro_svi"),
         ("numpyro", numpyro_schools_model_svi_custom_guide, "numpyro_svi_custom_guide"),
+        ("numpyro", numpyro_schools_model_nested, "numpyro_nested"),
     )
     data_directory = os.path.join(here, "saved_models")
     if not os.path.isdir(data_directory):

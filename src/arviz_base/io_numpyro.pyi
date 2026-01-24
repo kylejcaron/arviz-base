@@ -119,6 +119,32 @@ class SVIConverter(BaseNumPyroConverter):
     def _get_train_args_kwargs(self) -> None: ...
     def _get_samples(self) -> None: ...
 
+class NestedMCMCConverter(BaseNumPyroConverter):
+    def __init__(
+        self,
+        nested_sampler: numpyro.infer.NestedSampler,
+        *,
+        model_args=...,
+        model_kwargs=...,
+        prior: dict | None = ...,
+        posterior_predictive: dict | None = ...,
+        predictions: dict | None = ...,
+        constant_data: dict | None = ...,
+        predictions_constant_data: dict | None = ...,
+        log_likelihood: bool = ...,
+        index_origin: int | None = ...,
+        coords: dict | None = ...,
+        dims: dict[str, list[str]] | None = ...,
+        pred_dims: dict | None = ...,
+        extra_event_dims: dict | None = ...,
+        num_samples: int = ...,
+    ) -> None: ...
+    @property
+    def model(self) -> None: ...
+    def _infer_sample_shape(self) -> None: ...
+    def _get_train_args_kwargs(self) -> None: ...
+    def _get_samples(self) -> None: ...
+
 def from_numpyro(
     posterior: numpyro.infer.mcmc.MCMC | None = ...,
     *,
@@ -147,6 +173,24 @@ def from_numpyro_svi(
     constant_data: dict | None = ...,
     predictions_constant_data: dict | None = ...,
     log_likelihood=...,
+    index_origin: int | None = ...,
+    coords: dict | None = ...,
+    dims: dict[str, list[str]] | None = ...,
+    pred_dims: dict | None = ...,
+    extra_event_dims: dict | None = ...,
+    num_samples: int = ...,
+) -> DataTree: ...
+def from_numpyro_nested_mcmc(
+    nested_sampler: numpyro.infer.NestedSampler,
+    *,
+    model_args=...,
+    model_kwargs=...,
+    prior: dict | None = ...,
+    posterior_predictive: dict | None = ...,
+    predictions: dict | None = ...,
+    constant_data: dict | None = ...,
+    predictions_constant_data: dict | None = ...,
+    log_likelihood: bool | None = ...,
     index_origin: int | None = ...,
     coords: dict | None = ...,
     dims: dict[str, list[str]] | None = ...,

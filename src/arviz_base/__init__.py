@@ -13,7 +13,7 @@ from arviz_base.datasets import clear_data_home, get_data_home, list_datasets, l
 from arviz_base.io_cmdstanpy import from_cmdstanpy
 from arviz_base.io_dict import from_dict
 from arviz_base.io_emcee import from_emcee
-from arviz_base.io_numpyro import from_numpyro, from_numpyro_svi
+from arviz_base.io_numpyro import from_numpyro, from_numpyro_svi, from_numpyro_nested_mcmc
 from arviz_base.io_pystan import from_pystan
 from arviz_base.rcparams import rc_context, rcParams
 from arviz_base.reorg import (
@@ -50,6 +50,7 @@ __all__ = [
     "from_emcee",
     "from_numpyro",
     "from_numpyro_svi",
+    "from_numpyro_nested_mcmc",
     # labels submodule
     "labels",
     # rcparams
